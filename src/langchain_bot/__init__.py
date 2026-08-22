@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from langchain-bot!")
+"""Langchain based support agent"""
