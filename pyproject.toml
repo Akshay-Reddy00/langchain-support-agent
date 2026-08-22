@@ -1,0 +1,31 @@
+[project]
+name = "langchain-bot"
+version = "0.1.0"
+description = "AI‑powered customer support chatbot for a fictional e‑commerce."
+readme = "README.md"
+authors = [
+    { name = "Akshay" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "chromadb>=1.5.9",
+    "google-api-python-client>=2.199.0",
+    "google-auth-httplib2>=0.4.1",
+    "google-auth-oauthlib>=1.4.0",
+    "langchain>=1.3.16",
+    "langchain-community>=0.4.2",
+    "langchain-openai>=1.6.0",
+    "langchain-text-splitters>=1.1.2",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "openai>=3.3.1",
+    "python-dotenv>=1.2.3",
+    "streamlit>=1.62.0",
+]
+
+[project.scripts]
+langchain-bot = "langchain_bot:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
