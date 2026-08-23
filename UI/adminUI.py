@@ -33,14 +33,14 @@ def authenticate_admin(email: str, password: str):
         "role": row[2],
     }
 
+
 def get_return_requests():
     """Fetch return requests with their ticket and order details."""
 
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
 
-        rows = conn.execute(
-            """
+        rows = conn.execute("""
             SELECT
                 r.id AS return_id,
                 r.order_id,
@@ -70,12 +70,13 @@ def get_return_requests():
                 ON p.id = oi.product_id
 
             ORDER BY r.requested_at DESC
-            """
-        ).fetchall()
+            """).fetchall()
 
     return rows
 
+
 # Session
+
 
 def init_session():
     """Initialize Streamlit session state."""
@@ -84,7 +85,9 @@ def init_session():
     st.session_state.setdefault("admin_email", None)
     st.session_state.setdefault("admin_name", None)
 
+
 # Login
+
 
 def show_login():
     """Display admin login form."""
@@ -131,7 +134,9 @@ def show_login():
         st.success("Login successful.")
         st.rerun()
 
+
 # Dashboard
+
 
 def show_dashboard():
     """Display the admin dashboard."""
@@ -142,13 +147,9 @@ def show_dashboard():
     with st.sidebar:
         st.header("Admin")
 
-        st.write(
-            f"**{st.session_state.admin_name}**"
-        )
+        st.write(f"**{st.session_state.admin_name}**")
 
-        st.caption(
-            st.session_state.admin_email
-        )
+        st.caption(st.session_state.admin_email)
 
         st.divider()
 
@@ -164,9 +165,7 @@ def show_dashboard():
     # Dashboard header
     st.subheader("Return Requests")
 
-    st.info(
-        "The return request queue will appear here."
-    )
+    st.info("The return request queue will appear here.")
 
     col1, col2, col3 = st.columns(3)
 
@@ -192,56 +191,50 @@ def show_dashboard():
 
     st.subheader("Request Queue")
 
+    status_filter = st.selectbox(
+        "Filter by status",
+        ["ALL", "PENDING", "APPROVED", "REJECTED"],
+    )
+
     return_requests = get_return_requests()
+
+    if status_filter != "ALL":
+        return_requests = [
+            request
+            for request in return_requests
+            if request["return_status"] == status_filter
+        ]
 
     if not return_requests:
         st.write("No return requests to display yet.")
     else:
         for request in return_requests:
             with st.container(border=True):
-                st.markdown(
-                    f"### Return #{request['return_id']}"
-                )
+                st.markdown(f"### Return #{request['return_id']}")
 
                 col1, col2, col3 = st.columns(3)
 
                 with col1:
-                    st.write(
-                        f"**Customer:** {request['user_email']}"
-                    )
-                    st.write(
-                        f"**Order:** #{request['order_id']}"
-                    )
+                    st.write(f"**Customer:** {request['user_email']}")
+                    st.write(f"**Order:** #{request['order_id']}")
 
                 with col2:
-                    st.write(
-                        f"**Product:** {request['product_name']}"
-                    )
-                    st.write(
-                        f"**Return status:** {request['return_status']}"
-                    )
+                    st.write(f"**Product:** {request['product_name']}")
+                    st.write(f"**Return status:** {request['return_status']}")
 
                 with col3:
-                    st.write(
-                        f"**Ticket:** #{request['ticket_id']}"
-                    )
-                    st.write(
-                        f"**Ticket status:** {request['ticket_status']}"
-                    )
+                    st.write(f"**Ticket:** #{request['ticket_id']}")
+                    st.write(f"**Ticket status:** {request['ticket_status']}")
 
-                st.write(
-                    f"**Reason:** {request['reason']}"
-                )
+                st.write(f"**Reason:** {request['reason']}")
 
-                st.caption(
-                    f"Thread ID: {request['thread_id']}"
-                )
+                st.caption(f"Thread ID: {request['thread_id']}")
 
-                st.caption(
-                    f"Requested: {request['requested_at']}"
-                )
+                st.caption(f"Requested: {request['requested_at']}")
+
 
 # Main
+
 
 def main():
     st.set_page_config(
