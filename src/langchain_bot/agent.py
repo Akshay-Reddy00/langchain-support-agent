@@ -56,10 +56,12 @@ def get_thread_config(
 
 def create_support_agent():
     """Create the single support agent."""
+    model_name = os.getenv("MODEL")
+    temperature = os.getenv("TEMPERATURE")
 
     model = ChatOpenAI(
-        model="gpt-4.1-mini",
-        temperature=0.2,
+        model=model_name,
+        temperature=temperature,
     )
 
     return create_agent(
@@ -67,10 +69,17 @@ def create_support_agent():
         tools=get_action_tools(),
         system_prompt=(
             "You are an e-commerce customer support agent. "
-            "Help customers with return requests. "
-            "When a customer wants to return an item, verify the "
-            "necessary order information and use the return action tool. "
-            "The return action requires human approval before it executes."
+            "The authenticated customer's email is provided in the runtime context. "
+            "Never ask the customer to provide or confirm their email address. "
+            "Use the authenticated customer context when calling tools. "
+            "\n\n"
+            "When the customer requests a return, identify the order ID, "
+            "product name, and reason from the conversation. "
+            "If those details are available, call create_return_action. "
+            "Do not ask for information that is already available in the "
+            "conversation or runtime context. "
+            "The create_return_action tool requires human approval before "
+            "it can execute."
         ),
         context_schema=SessionContext,
         checkpointer=get_checkpointer(),

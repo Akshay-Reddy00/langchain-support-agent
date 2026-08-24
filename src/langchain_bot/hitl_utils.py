@@ -115,13 +115,41 @@ def list_pending_actions():
 def resume_with_decision(
     *,
     agent,
-    thread_id: str,
+    action_id: int,
     decision: str,
 ):
-    """Resume a paused LangGraph thread with an admin decision."""
+    """Resume the customer thread for a pending admin action."""
 
     if decision not in {"approve", "reject"}:
         raise ValueError("decision must be 'approve' or 'reject'")
+
+    action = get_pending_action(action_id)
+
+    if action is None:
+        raise ValueError(f"Pending action #{action_id} was not found.")
+
+    if action["status"] != "PENDING":
+        raise ValueError(
+            f"Pending action #{action_id} is already " f"{action['status']}."
+        )
+
+    thread_id = action["thread_id"]
+    user_email = action["user_email"]
+
+    # thread_id format:
+    # user_email:conversation_id
+    prefix = f"{user_email}:"
+
+    if not thread_id.startswith(prefix):
+        raise ValueError("Pending action has an invalid thread_id.")
+
+    conversation_id = thread_id[len(prefix) :]
+
+    context = SessionContext(
+        user_email=user_email,
+        conversation_id=conversation_id,
+        role="customer",
+    )
 
     config = {
         "configurable": {
@@ -129,9 +157,15 @@ def resume_with_decision(
         }
     }
 
-    return agent.invoke(
+    # The actual HITL decision resumes the original
+    # LangGraph execution.
+    result = agent.invoke(
         Command(
             resume={
+                # LangGraph's interrupt ID mapping is not
+                # stored in pending_actions, so for the
+                # current single-action flow we resume the
+                # next interrupt.
                 "decisions": [
                     {
                         "type": decision,
@@ -140,4 +174,45 @@ def resume_with_decision(
             }
         ),
         config=config,
+        context=context,
     )
+
+    update_pending_action(
+        action_id,
+        "APPROVED" if decision == "approve" else "REJECTED",
+    )
+
+    return result
+
+
+def handle_interrupt(
+    *,
+    interrupt,
+    user_email: str,
+    thread_id: str,
+) -> list[int]:
+    """Persist interrupted actions as PENDING admin actions."""
+
+    action_ids = []
+
+    value = interrupt.value
+
+    for action_request in value.get("action_requests", []):
+        name = action_request["name"]
+        args = action_request.get("args", {})
+
+        if name != "create_return_action":
+            continue
+
+        action_id = create_pending_action(
+            thread_id=thread_id,
+            user_email=user_email,
+            action_type="CREATE_RETURN",
+            order_id=int(args["order_id"]),
+            product_name=args.get("product_name"),
+            reason=args.get("reason"),
+        )
+
+        action_ids.append(action_id)
+
+    return action_ids
