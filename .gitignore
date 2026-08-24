@@ -18,4 +18,5 @@ token.pickle
 
 #DB - local data
 *.db
+*.sqlite
 chroma_db/
