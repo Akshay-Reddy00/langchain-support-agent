@@ -3,10 +3,24 @@ from pathlib import Path
 
 import streamlit as st
 
-# Database
+from langchain_bot.agent import get_agent
+from langchain_bot.hitl_utils import (
+    list_pending_actions,
+    get_pending_action,
+    resume_with_decision,
+)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# -------------------------------------------------------------------
+# Database
+# -------------------------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "ecommerce.db"
+
+
+# -------------------------------------------------------------------
+# Authentication
+# -------------------------------------------------------------------
 
 
 def authenticate_admin(email: str, password: str):
@@ -34,68 +48,67 @@ def authenticate_admin(email: str, password: str):
     }
 
 
-def get_return_requests():
-    """Fetch return requests with their ticket and order details."""
+# -------------------------------------------------------------------
+# Admin statistics
+# -------------------------------------------------------------------
+
+
+def get_action_counts():
+    """Return pending-action counts by status."""
 
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row
-
         rows = conn.execute("""
-            SELECT
-                r.id AS return_id,
-                r.order_id,
-                r.reason,
-                r.status AS return_status,
-                r.requested_at,
-                r.resolved_at,
-
-                t.id AS ticket_id,
-                t.subject,
-                t.status AS ticket_status,
-                t.thread_id,
-                t.user_email,
-                t.created_at AS ticket_created_at,
-
-                p.name AS product_name
-
-            FROM returns r
-
-            LEFT JOIN tickets t
-                ON t.return_id = r.id
-
-            LEFT JOIN order_items oi
-                ON oi.id = r.order_item_id
-
-            LEFT JOIN products p
-                ON p.id = oi.product_id
-
-            ORDER BY r.requested_at DESC
+            SELECT status, COUNT(*)
+            FROM pending_actions
+            GROUP BY status
             """).fetchall()
 
-    return rows
+    counts = {
+        "PENDING": 0,
+        "APPROVED": 0,
+        "REJECTED": 0,
+    }
+
+    for status, count in rows:
+        counts[status] = count
+
+    return counts
 
 
+# -------------------------------------------------------------------
 # Session
+# -------------------------------------------------------------------
 
 
 def init_session():
     """Initialize Streamlit session state."""
 
-    st.session_state.setdefault("admin_logged_in", False)
-    st.session_state.setdefault("admin_email", None)
-    st.session_state.setdefault("admin_name", None)
+    st.session_state.setdefault(
+        "admin_logged_in",
+        False,
+    )
+
+    st.session_state.setdefault(
+        "admin_email",
+        None,
+    )
+
+    st.session_state.setdefault(
+        "admin_name",
+        None,
+    )
 
 
+# -------------------------------------------------------------------
 # Login
+# -------------------------------------------------------------------
 
 
 def show_login():
     """Display admin login form."""
 
     st.title("🛠️ Support Admin")
-
     st.caption("Administrator dashboard")
-
     st.divider()
 
     with st.form("admin_login_form"):
@@ -121,7 +134,10 @@ def show_login():
             st.error("Please enter your email and password.")
             return
 
-        user = authenticate_admin(email, password)
+        user = authenticate_admin(
+            email,
+            password,
+        )
 
         if user is None:
             st.error("Invalid admin credentials.")
@@ -135,7 +151,110 @@ def show_login():
         st.rerun()
 
 
+# -------------------------------------------------------------------
+# Admin actions
+# -------------------------------------------------------------------
+
+
+def process_admin_decision(
+    action_id: int,
+    decision: str,
+):
+    """Approve or reject one pending action."""
+
+    action = get_pending_action(action_id)
+
+    if action is None:
+        st.error(f"Pending action #{action_id} was not found.")
+        return
+
+    if action["status"] != "PENDING":
+        st.warning(f"Action #{action_id} is already " f"{action['status']}.")
+        return
+
+    try:
+        agent = get_agent()
+
+        resume_with_decision(
+            agent=agent,
+            action_id=action_id,
+            decision=decision,
+        )
+
+    except Exception as exc:
+        st.error(f"Could not {decision} action " f"#{action_id}: {exc}")
+        return
+
+    if decision == "approve":
+        st.success(f"Action #{action_id} approved.")
+    else:
+        st.success(f"Action #{action_id} rejected.")
+
+    st.rerun()
+
+
+# -------------------------------------------------------------------
+# Pending action card
+# -------------------------------------------------------------------
+
+
+def show_pending_action(action):
+    """Display one pending human-review action."""
+
+    action_id = action["id"]
+
+    with st.container(border=True):
+        st.markdown(f"### Action #{action_id}")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.write(f"**Customer:** {action['user_email']}")
+            st.write(f"**Order:** #{action['order_id']}")
+
+        with col2:
+            st.write(f"**Action:** {action['action_type']}")
+
+            if action["product_name"]:
+                st.write(f"**Product:** " f"{action['product_name']}")
+
+        with col3:
+            st.write(f"**Status:** {action['status']}")
+            st.write(f"**Created:** {action['created_at']}")
+
+        if action["reason"]:
+            st.write(f"**Reason:** {action['reason']}")
+
+        st.caption(f"Thread ID: {action['thread_id']}")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button(
+                "✅ Approve",
+                key=f"approve_{action_id}",
+                use_container_width=True,
+            ):
+                process_admin_decision(
+                    action_id,
+                    "approve",
+                )
+
+        with col2:
+            if st.button(
+                "❌ Reject",
+                key=f"reject_{action_id}",
+                use_container_width=True,
+            ):
+                process_admin_decision(
+                    action_id,
+                    "reject",
+                )
+
+
+# -------------------------------------------------------------------
 # Dashboard
+# -------------------------------------------------------------------
 
 
 def show_dashboard():
@@ -143,7 +262,6 @@ def show_dashboard():
 
     st.title("🛠️ Support Admin Dashboard")
 
-    # Sidebar
     with st.sidebar:
         st.header("Admin")
 
@@ -160,83 +278,62 @@ def show_dashboard():
             st.session_state.admin_logged_in = False
             st.session_state.admin_email = None
             st.session_state.admin_name = None
+
             st.rerun()
 
-    # Dashboard header
-    st.subheader("Return Requests")
+    # ---------------------------------------------------------------
+    # Statistics
+    # ---------------------------------------------------------------
 
-    st.info("The return request queue will appear here.")
+    st.subheader("Return Action Queue")
+
+    counts = get_action_counts()
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         st.metric(
             "Pending",
-            "0",
+            counts["PENDING"],
         )
 
     with col2:
         st.metric(
             "Approved",
-            "0",
+            counts["APPROVED"],
         )
 
     with col3:
         st.metric(
             "Rejected",
-            "0",
+            counts["REJECTED"],
         )
 
     st.divider()
 
-    st.subheader("Request Queue")
+    # ---------------------------------------------------------------
+    # Pending queue
+    # ---------------------------------------------------------------
 
-    status_filter = st.selectbox(
-        "Filter by status",
-        ["ALL", "PENDING", "APPROVED", "REJECTED"],
-    )
+    st.subheader("Pending Actions")
 
-    return_requests = get_return_requests()
+    pending_actions = list_pending_actions()
 
-    if status_filter != "ALL":
-        return_requests = [
-            request
-            for request in return_requests
-            if request["return_status"] == status_filter
-        ]
+    if not pending_actions:
+        st.info("There are no pending actions.")
+        return
 
-    if not return_requests:
-        st.write("No return requests to display yet.")
-    else:
-        for request in return_requests:
-            with st.container(border=True):
-                st.markdown(f"### Return #{request['return_id']}")
-
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    st.write(f"**Customer:** {request['user_email']}")
-                    st.write(f"**Order:** #{request['order_id']}")
-
-                with col2:
-                    st.write(f"**Product:** {request['product_name']}")
-                    st.write(f"**Return status:** {request['return_status']}")
-
-                with col3:
-                    st.write(f"**Ticket:** #{request['ticket_id']}")
-                    st.write(f"**Ticket status:** {request['ticket_status']}")
-
-                st.write(f"**Reason:** {request['reason']}")
-
-                st.caption(f"Thread ID: {request['thread_id']}")
-
-                st.caption(f"Requested: {request['requested_at']}")
+    for action in pending_actions:
+        show_pending_action(action)
 
 
+# -------------------------------------------------------------------
 # Main
+# -------------------------------------------------------------------
 
 
 def main():
+
     st.set_page_config(
         page_title="Support Admin",
         page_icon="🛠️",

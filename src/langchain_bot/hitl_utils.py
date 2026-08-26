@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from langgraph.types import Command
+from langchain_bot.context import SessionContext
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "ecommerce.db"
@@ -112,6 +113,29 @@ def list_pending_actions():
             """).fetchall()
 
 
+def _get_interrupt_id(agent, thread_id: str) -> str:
+    """Get the active LangGraph interrupt ID for a paused thread."""
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+        }
+    }
+
+    state = agent.get_state(config)
+
+    if not state.tasks:
+        raise ValueError(
+            f"Thread '{thread_id}' is not currently paused for human review."
+        )
+
+    for task in state.tasks:
+        if task.interrupts:
+            return task.interrupts[0].id
+
+    raise ValueError(f"No active HITL interrupt found for thread '{thread_id}'.")
+
+
 def resume_with_decision(
     *,
     agent,
@@ -157,20 +181,23 @@ def resume_with_decision(
         }
     }
 
+    interrupt_id = _get_interrupt_id(
+        agent,
+        thread_id,
+    )
+
     # The actual HITL decision resumes the original
     # LangGraph execution.
     result = agent.invoke(
         Command(
             resume={
-                # LangGraph's interrupt ID mapping is not
-                # stored in pending_actions, so for the
-                # current single-action flow we resume the
-                # next interrupt.
-                "decisions": [
-                    {
-                        "type": decision,
-                    }
-                ]
+                interrupt_id: {
+                    "decisions": [
+                        {
+                            "type": decision,
+                        }
+                    ]
+                }
             }
         ),
         config=config,

@@ -1,11 +1,13 @@
 import streamlit as st
 from uuid import uuid4
 
+from langchain_bot.support_service import process_customer_message
+
+
 def init_session() -> None:
     st.session_state.setdefault("logged_in", False)
     st.session_state.setdefault("user_email", None)
     st.session_state.setdefault("user_role", None)
-
     st.session_state.setdefault("conversation_id", None)
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("conversations", {})
@@ -15,9 +17,9 @@ def login_screen() -> None:
     st.title("🛍️ Customer Support")
     st.caption("AI-powered e-commerce support")
 
-    st.subheader("Sign in")
-
     with st.form("login_form"):
+        st.subheader("Sign in")
+
         email = st.text_input(
             "Email",
             placeholder="you@example.com",
@@ -33,65 +35,23 @@ def login_screen() -> None:
             use_container_width=True,
         )
 
-        if submitted:
-            if not email or not password:
-                st.error("Please enter your email and password.")
-                return
+    if submitted:
+        if not email or not password:
+            st.error("Please enter your email and password.")
+            return
 
-            st.session_state.logged_in = True
-            st.session_state.user_email = email
-            st.session_state.user_role = "customer"
+        st.session_state.logged_in = True
+        st.session_state.user_email = email
+        st.session_state.user_role = "customer"
 
-            st.rerun()
-
-
-def customer_home() -> None:
-    st.title("🛍️ Customer Support")
-
-    st.sidebar.header("Account")
-    st.sidebar.write(
-        f"**Email:** {st.session_state.user_email}"
-    )
-
-    st.sidebar.divider()
-
-    st.sidebar.header("Conversations")
-
-    if st.sidebar.button(
-        "➕ New conversation",
-        use_container_width=True,
-    ):
-        start_new_conversation()
         st.rerun()
 
-    st.sidebar.divider()
-
-    if st.sidebar.button(
-        "Logout",
-        use_container_width=True,
-    ):
-        st.session_state.logged_in = False
-        st.session_state.user_email = None
-        st.session_state.user_role = None
-        st.session_state.conversation_id = None
-        st.session_state.messages = []
-        st.session_state.conversations = {}
-        st.rerun()
-
-    if st.session_state.conversation_id:
-        st.caption(
-            f"Conversation ID: "
-            f"`{st.session_state.conversation_id}`"
-        )
-    else:
-        st.info(
-            "Start a new conversation from the sidebar."
-        )
 
 def start_new_conversation() -> None:
     conversation_id = str(uuid4())
 
     st.session_state.conversation_id = conversation_id
+
     st.session_state.messages = [
         {
             "role": "assistant",
@@ -99,9 +59,113 @@ def start_new_conversation() -> None:
         }
     ]
 
-    st.session_state.conversations[conversation_id] = (
-        st.session_state.messages.copy()
-    )
+    st.session_state.conversations[conversation_id] = st.session_state.messages.copy()
+
+
+def customer_home() -> None:
+    st.title("🛍️ Customer Support")
+
+    with st.sidebar:
+        st.header("Account")
+
+        st.write(f"**Email:** {st.session_state.user_email}")
+
+        st.divider()
+
+        st.header("Conversations")
+
+        if st.button(
+            "➕ New conversation",
+            use_container_width=True,
+        ):
+            start_new_conversation()
+            st.rerun()
+
+        st.divider()
+
+        if st.button(
+            "Logout",
+            use_container_width=True,
+        ):
+            st.session_state.logged_in = False
+            st.session_state.user_email = None
+            st.session_state.user_role = None
+            st.session_state.conversation_id = None
+            st.session_state.messages = []
+            st.session_state.conversations = {}
+
+            st.rerun()
+
+    if not st.session_state.conversation_id:
+        st.info("Start a new conversation from the sidebar.")
+        return
+
+    st.caption(f"Conversation ID: " f"`{st.session_state.conversation_id}`")
+
+    # Display conversation
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    # Chat input
+    prompt = st.chat_input("How can I help you?")
+
+    if prompt:
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        )
+
+        with st.chat_message("user"):
+            st.write(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                result = process_customer_message(
+                    user_email=st.session_state.user_email,
+                    conversation_id=(st.session_state.conversation_id),
+                    message=prompt,
+                )
+
+            if result["status"] == "pending":
+                response = (
+                    "Your request has been submitted for "
+                    "human review. An administrator needs to "
+                    "approve it before I can proceed."
+                )
+            else:
+                messages = result["result"].get(
+                    "messages",
+                    [],
+                )
+
+                response = ""
+
+                for message in reversed(messages):
+                    if message.type == "ai" and message.content:
+                        response = message.content
+                        break
+
+                if not response:
+                    response = "I processed your request."
+
+            st.write(response)
+
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": response,
+            }
+        )
+
+        conversation_id = st.session_state.conversation_id
+
+        st.session_state.conversations[conversation_id] = (
+            st.session_state.messages.copy()
+        )
+
 
 def main() -> None:
     st.set_page_config(
