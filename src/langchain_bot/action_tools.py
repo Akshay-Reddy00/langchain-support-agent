@@ -17,10 +17,10 @@ def create_return_action(
     reason: str,
     runtime: ToolRuntime[SessionContext],
 ) -> str:
-    """Create an approved return request for a product in the customer's order.
+    """Create a return request for a product in the customer's order.
 
-    This tool performs the actual database changes only after the agent's
-    human-in-the-loop approval has been granted.
+    This tool creates the return request with PENDING status only after the
+    agent's human-in-the-loop approval has been granted.
 
     The logged-in customer identity comes from SessionContext. Do not accept
     user_email from the model.
