@@ -10,6 +10,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langchain_bot.sql_tools import get_sql_tools
 from langchain_bot.action_tools import get_action_tools
 from langchain_bot.context import SessionContext
+from langchain_bot.rag_tools import get_rag_tools
 
 from langchain_bot.customer_context_middleware import CustomerContextMiddleware
 
@@ -71,6 +72,7 @@ def create_support_agent():
     tools = [
         *get_action_tools(),
         *get_sql_tools(),
+        *get_rag_tools(),
     ]
 
     return create_agent(
@@ -101,6 +103,13 @@ def create_support_agent():
             "conversation or runtime context. "
             "The create_return_action tool creates a PENDING return request "
             "and requires human-in-the-loop approval before execution."
+            "\n\n"
+            "You have access to rag_policy_search for general questions about "
+            "returns, refunds, cancellations, shipping, delivery, and store policies. "
+            "You MUST use rag_policy_search when the customer asks a general policy "
+            "question that does not require customer-specific database information. "
+            "For customer-specific questions about orders, payments, return status, "
+            "or tickets, use the SQL database tools instead of RAG. "
         ),
         context_schema=SessionContext,
         checkpointer=get_checkpointer(),
