@@ -145,3 +145,21 @@ Set: $env:PYTHONPATH = "$PWD\src"
 Then run:
 & ".\.venv\Scripts\python.exe" -m streamlit run .\src\ui\adminUI.py
 ```
+
+### Gmail config
+
+#### Create a Web application OAuth client
+
+- For local development, add the redirect URI used by the authorization application `http://localhost:8501`
+- Download OAuth client credentials `credentials.json` and place in project root.
+
+#### Generate the OAuth token
+
+```
+$env:PYTHONPATH = "$PWD\src"
+& ".\.venv\Scripts\python.exe" .\src\ui\authorize_gmail.py
+```
+
+- A browser window will open, Sign in with the Gmail account that should send notification emails.
+- Approve the requested Gmail permissions and Complete the OAuth flow.
+- This will create `token.json`
