@@ -26,4 +26,4 @@ checkpoints.sqlite-wal
 
 #logs
 
-./logs
+logs
