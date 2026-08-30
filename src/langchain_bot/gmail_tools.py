@@ -1,16 +1,14 @@
-import base64
 import logging
 import os
 import sqlite3
-
 from datetime import datetime, timezone
-from email.message import EmailMessage
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from langchain_google_community import GmailToolkit
 
 from langchain_bot.action_tools import DB_PATH
 
@@ -27,36 +25,7 @@ GMAIL_SCOPES = [
 ]
 
 
-# ---------------------------------------------------------
-# Email logger
-# ---------------------------------------------------------
-
-LOGS_DIR = PROJECT_ROOT / "logs"
-LOGS_DIR.mkdir(exist_ok=True)
-
-EMAIL_LOG_PATH = LOGS_DIR / "email.log"
-
-email_logger = logging.getLogger("langchain_bot.email")
-email_logger.setLevel(logging.INFO)
-email_logger.propagate = False
-
-
-if not email_logger.handlers:
-    email_handler = logging.FileHandler(
-        EMAIL_LOG_PATH,
-        encoding="utf-8",
-    )
-
-    email_formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-
-    email_handler.setFormatter(email_formatter)
-
-    email_logger.addHandler(email_handler)
-
-
-# ---------------------------------------------------------
-# Gmail authentication
-# ---------------------------------------------------------
+logger = logging.getLogger("email")
 
 
 def get_credentials_path() -> Path:
@@ -65,7 +34,7 @@ def get_credentials_path() -> Path:
     return Path(
         os.getenv(
             "GOOGLE_CREDENTIALS_PATH",
-            PROJECT_ROOT / "credentials.json",
+            str(PROJECT_ROOT / "credentials.json"),
         )
     )
 
@@ -76,7 +45,7 @@ def get_token_path() -> Path:
     return Path(
         os.getenv(
             "GOOGLE_TOKEN_PATH",
-            PROJECT_ROOT / "token.json",
+            str(PROJECT_ROOT / "token.json"),
         )
     )
 
@@ -88,7 +57,8 @@ def get_gmail_credentials() -> Credentials:
 
     if not token_path.exists():
         raise FileNotFoundError(
-            "Gmail token.json was not found. " "Run authorize_gmail.py first."
+            "Gmail token.json was not found. "
+            "Complete the Gmail OAuth authorization flow first."
         )
 
     credentials = Credentials.from_authorized_user_file(
@@ -106,7 +76,8 @@ def get_gmail_credentials() -> Credentials:
 
     if not credentials.valid:
         raise RuntimeError(
-            "Gmail credentials are invalid. " "Run authorize_gmail.py again."
+            "Gmail credentials are invalid. "
+            "Complete the Gmail OAuth authorization flow again."
         )
 
     return credentials
@@ -124,9 +95,20 @@ def get_gmail_service():
     )
 
 
-# ---------------------------------------------------------
-# Gmail sending
-# ---------------------------------------------------------
+def get_gmail_send_tool():
+    """Return the LangChain Gmail send tool."""
+
+    toolkit = GmailToolkit(
+        api_resource=get_gmail_service(),
+    )
+
+    tools = toolkit.get_tools()
+
+    for tool in tools:
+        if tool.name == "send_gmail_message":
+            return tool
+
+    raise RuntimeError("send_gmail_message tool was not found in GmailToolkit.")
 
 
 def send_email(
@@ -135,58 +117,26 @@ def send_email(
     subject: str,
     body: str,
 ) -> str:
-    """Send a plain-text email using the Gmail API."""
+    """Send an email using LangChain GmailToolkit."""
 
-    try:
-        message = EmailMessage()
+    send_tool = get_gmail_send_tool()
 
-        message["To"] = to_email
-        message["Subject"] = subject
+    result = send_tool.invoke(
+        {
+            "message": body,
+            "to": to_email,
+            "subject": subject,
+        }
+    )
 
-        message.set_content(body)
+    logger.info(
+        "EMAIL SENT | to=%s | subject=%s | result=%s",
+        to_email,
+        subject,
+        result,
+    )
 
-        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
-
-        service = get_gmail_service()
-
-        result = (
-            service.users()
-            .messages()
-            .send(
-                userId="me",
-                body={
-                    "raw": encoded_message,
-                },
-            )
-            .execute()
-        )
-
-        message_id = result["id"]
-
-        email_logger.info(
-            "EMAIL SENT | to=%s | subject=%s | gmail_message_id=%s",
-            to_email,
-            subject,
-            message_id,
-        )
-
-        return message_id
-
-    except Exception as exc:
-
-        email_logger.exception(
-            "EMAIL FAILED | to=%s | subject=%s | error=%s",
-            to_email,
-            subject,
-            exc,
-        )
-
-        raise
-
-
-# ---------------------------------------------------------
-# Database audit logging
-# ---------------------------------------------------------
+    return str(result)
 
 
 def log_email(
@@ -200,11 +150,9 @@ def log_email(
     """Record a successfully sent email in email_logs."""
 
     body_preview = body[:500]
-
     sent_at = datetime.now(timezone.utc).isoformat()
 
     with sqlite3.connect(DB_PATH) as conn:
-
         conn.execute(
             """
             INSERT INTO email_logs (
@@ -229,17 +177,12 @@ def log_email(
 
         conn.commit()
 
-    email_logger.info(
+    logger.info(
         "EMAIL DATABASE LOGGED | user_id=%s | to=%s | type=%s",
         user_id,
         email,
         email_type,
     )
-
-
-# ---------------------------------------------------------
-# Send + database log
-# ---------------------------------------------------------
 
 
 def send_and_log_email(
@@ -250,9 +193,9 @@ def send_and_log_email(
     body: str,
     email_type: str,
 ) -> str:
-    """Send an email through Gmail and log it in the database."""
+    """Send an email through GmailToolkit and log it in the database."""
 
-    message_id = send_email(
+    result = send_email(
         to_email=to_email,
         subject=subject,
         body=body,
@@ -266,4 +209,4 @@ def send_and_log_email(
         email_type=email_type,
     )
 
-    return message_id
+    return result
