@@ -285,7 +285,7 @@ def show_dashboard():
     # Statistics
     # ---------------------------------------------------------------
 
-    st.subheader("Return Action Queue")
+    st.subheader("Human Review Queue")
 
     counts = get_action_counts()
 

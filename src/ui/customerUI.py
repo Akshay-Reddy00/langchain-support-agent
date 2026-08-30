@@ -1,7 +1,81 @@
-import streamlit as st
+import json
+import sqlite3
+from pathlib import Path
 from uuid import uuid4
 
+import streamlit as st
+
 from langchain_bot.support_service import process_customer_message
+
+
+def ensure_conv_store() -> Path:
+    """Create the persistent conversation store."""
+
+    project_root = Path(__file__).resolve().parents[2]
+
+    db_path = project_root / "conversations.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                user_email TEXT NOT NULL,
+                messages TEXT NOT NULL
+            )
+            """)
+        conn.commit()
+
+    return db_path
+
+
+def save_conversation(
+    conversation_id: str,
+    user_email: str,
+    messages: list,
+) -> None:
+    """Save or update one conversation."""
+
+    db_path = ensure_conv_store()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO conversations (
+                id,
+                user_email,
+                messages
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                messages = excluded.messages
+            """,
+            (
+                conversation_id,
+                user_email,
+                json.dumps(messages),
+            ),
+        )
+
+        conn.commit()
+
+
+def load_conversations(user_email: str) -> dict:
+    """Load all conversations for one customer."""
+
+    db_path = ensure_conv_store()
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, messages
+            FROM conversations
+            WHERE user_email = ?
+            ORDER BY rowid DESC
+            """,
+            (user_email,),
+        ).fetchall()
+
+    return {conversation_id: json.loads(messages) for conversation_id, messages in rows}
 
 
 def init_session() -> None:
@@ -44,26 +118,40 @@ def login_screen() -> None:
         st.session_state.user_email = email
         st.session_state.user_role = "customer"
 
+        st.session_state.conversations = load_conversations(email)
+        st.session_state.conversation_id = None
+        st.session_state.messages = []
+
         st.rerun()
 
 
 def start_new_conversation() -> None:
     conversation_id = str(uuid4())
 
-    st.session_state.conversation_id = conversation_id
-
-    st.session_state.messages = [
+    messages = [
         {
             "role": "assistant",
             "content": "Hi! How can I help you today?",
         }
     ]
 
-    st.session_state.conversations[conversation_id] = st.session_state.messages.copy()
+    st.session_state.conversation_id = conversation_id
+    st.session_state.messages = messages
+    st.session_state.conversations[conversation_id] = messages.copy()
+
+    save_conversation(
+        conversation_id,
+        st.session_state.user_email,
+        messages,
+    )
 
 
 def customer_home() -> None:
     st.title("🛍️ Customer Support")
+
+    # ---------------------------------------------------------------
+    # Sidebar
+    # ---------------------------------------------------------------
 
     with st.sidebar:
         st.header("Account")
@@ -81,6 +169,31 @@ def customer_home() -> None:
             start_new_conversation()
             st.rerun()
 
+        for conversation_id, messages in st.session_state.conversations.items():
+            if messages:
+                first_user_message = next(
+                    (
+                        message["content"]
+                        for message in messages
+                        if message["role"] == "user"
+                    ),
+                    "New conversation",
+                )
+
+                label = first_user_message[:40]
+
+            else:
+                label = "New conversation"
+
+            if st.button(
+                label,
+                key=f"conversation_{conversation_id}",
+                use_container_width=True,
+            ):
+                st.session_state.conversation_id = conversation_id
+                st.session_state.messages = messages.copy()
+                st.rerun()
+
         st.divider()
 
         if st.button(
@@ -95,6 +208,10 @@ def customer_home() -> None:
             st.session_state.conversations = {}
 
             st.rerun()
+
+    # ---------------------------------------------------------------
+    # Main conversation area
+    # ---------------------------------------------------------------
 
     if not st.session_state.conversation_id:
         st.info("Start a new conversation from the sidebar.")
@@ -135,15 +252,16 @@ def customer_home() -> None:
                     "human review. An administrator needs to "
                     "approve it before I can proceed."
                 )
+
             else:
-                messages = result["result"].get(
+                agent_messages = result["result"].get(
                     "messages",
                     [],
                 )
 
                 response = ""
 
-                for message in reversed(messages):
+                for message in reversed(agent_messages):
                     if message.type == "ai" and message.content:
                         response = message.content
                         break
@@ -164,6 +282,12 @@ def customer_home() -> None:
 
         st.session_state.conversations[conversation_id] = (
             st.session_state.messages.copy()
+        )
+
+        save_conversation(
+            conversation_id,
+            st.session_state.user_email,
+            st.session_state.messages,
         )
 
 

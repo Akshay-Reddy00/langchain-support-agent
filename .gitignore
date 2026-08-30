@@ -23,3 +23,7 @@ chroma_db/
 checkpoints.sqlite
 checkpoints.sqlite-shm
 checkpoints.sqlite-wal
+
+#logs
+
+./logs

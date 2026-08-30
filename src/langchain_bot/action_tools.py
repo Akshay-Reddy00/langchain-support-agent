@@ -11,6 +11,123 @@ DB_PATH = PROJECT_ROOT / "ecommerce.db"
 
 
 @tool
+def cancel_order_action(
+    order_id: int,
+    runtime: ToolRuntime[SessionContext],
+) -> str:
+    """Cancel a PLACED order after human approval.
+
+    The logged-in customer identity comes from SessionContext.
+    Do not accept user_email from the model.
+    """
+
+    context = runtime.context
+
+    if context is None:
+        return "Unable to cancel the order because customer context is missing."
+
+    user_email = context.user_email
+    conversation_id = context.conversation_id
+    thread_id = f"{user_email}:{conversation_id}"
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        # Find the logged-in customer.
+        user = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE email = ?
+              AND role = 'customer'
+            """,
+            (user_email,),
+        ).fetchone()
+
+        if user is None:
+            return (
+                "Unable to cancel the order because the customer account was not found."
+            )
+
+        # Verify that the order belongs to the logged-in customer.
+        order = conn.execute(
+            """
+            SELECT id, status
+            FROM orders
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (order_id, user["id"]),
+        ).fetchone()
+
+        if order is None:
+            return f"Order #{order_id} was not found for your account."
+
+        # Only PLACED orders can be cancelled.
+        if order["status"] != "PLACED":
+            return (
+                f"Order #{order_id} is currently {order['status']}. "
+                "Only PLACED orders can be cancelled."
+            )
+
+        # Cancel the order.
+        conn.execute(
+            """
+            UPDATE orders
+            SET status = 'CANCELLED'
+            WHERE id = ?
+            """,
+            (order_id,),
+        )
+
+        # Refund the payment for the cancelled order.
+        conn.execute(
+            """
+            UPDATE payments
+            SET status = 'REFUNDED'
+            WHERE order_id = ?
+            """,
+            (order_id,),
+        )
+
+        # Create a ticket linked to the same conversation thread.
+        subject = f"Cancellation request for order #{order_id}"
+
+        conn.execute(
+            """
+            INSERT INTO tickets (
+                user_id,
+                return_id,
+                subject,
+                status,
+                thread_id,
+                user_email,
+                created_at,
+                updated_at
+            )
+            VALUES (?, NULL, ?, 'OPEN', ?, ?, ?, ?)
+            """,
+            (
+                user["id"],
+                subject,
+                thread_id,
+                user_email,
+                now,
+                now,
+            ),
+        )
+
+        conn.commit()
+
+    return (
+        f"Order #{order_id} has been cancelled successfully. "
+        "The payment has been marked for refund."
+    )
+
+
+@tool
 def create_return_action(
     order_id: int,
     product_name: str,
@@ -172,12 +289,12 @@ def create_return_action(
         conn.commit()
 
     return (
-        f"Return request #{return_id} has been created for "
-        f"'{item['product_name']}' in order #{order_id}. "
-        "The request is now pending human review."
+        f"Your return request #{return_id} for "
+        f"'{item['product_name']}' in order #{order_id} "
+        "has been approved and created successfully."
     )
 
 
 def get_action_tools():
     """Return the customer action tools."""
-    return [create_return_action]
+    return [cancel_order_action, create_return_action]

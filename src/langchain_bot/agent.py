@@ -12,6 +12,9 @@ from langchain_bot.action_tools import get_action_tools
 from langchain_bot.context import SessionContext
 from langchain_bot.rag_tools import get_rag_tools
 
+from langchain_bot.logging_middleware import (
+    get_logging_middleware,
+)
 from langchain_bot.customer_context_middleware import CustomerContextMiddleware
 
 load_dotenv()
@@ -110,13 +113,32 @@ def create_support_agent():
             "question that does not require customer-specific database information. "
             "For customer-specific questions about orders, payments, return status, "
             "or tickets, use the SQL database tools instead of RAG. "
+            "When the customer requests to cancel an order, identify the order ID "
+            "from the conversation. If the order ID is available, call "
+            "cancel_order_action. "
+            "Cancellation requests require human approval before execution. "
+            "\n\n"
+            "When the customer requests a return, identify the order ID, "
+            "product name, and reason from the conversation. "
+            "If those details are available, call create_return_action. "
+            "Do not ask for information that is already available in the "
+            "conversation or runtime context. "
+            "The create_return_action tool requires human approval before "
+            "execution."
+            "\n\n"
+            "If a human reviewer rejects an action, do not retry the same action "
+            "automatically and do not call the same action tool again unless the "
+            "customer provides a new request or changes the request. "
+            "Clearly inform the customer that the requested action was not approved."
         ),
         context_schema=SessionContext,
         checkpointer=get_checkpointer(),
         middleware=[
             CustomerContextMiddleware(),
+            *get_logging_middleware(),
             HumanInTheLoopMiddleware(
                 interrupt_on={
+                    "cancel_order_action": True,
                     "create_return_action": True,
                 }
             ),

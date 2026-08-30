@@ -1,9 +1,11 @@
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+import json
 
 from langgraph.types import Command
 from langchain_bot.context import SessionContext
+from langchain_bot.gmail_tools import send_and_log_email
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = PROJECT_ROOT / "ecommerce.db"
@@ -136,6 +138,76 @@ def _get_interrupt_id(agent, thread_id: str) -> str:
     raise ValueError(f"No active HITL interrupt found for thread '{thread_id}'.")
 
 
+def save_resumed_response(
+    *,
+    conversation_id: str,
+    user_email: str,
+    result,
+) -> None:
+    """Save the final AI response from a resumed HITL workflow."""
+
+    messages = result.get(
+        "messages",
+        [],
+    )
+
+    response = ""
+
+    for message in reversed(messages):
+        if message.type == "ai" and message.content:
+            response = message.content
+            break
+
+    if not response:
+        return
+
+    project_root = Path(__file__).resolve().parents[2]
+
+    db_path = project_root / "conversations.db"
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT messages
+            FROM conversations
+            WHERE id = ?
+              AND user_email = ?
+            """,
+            (
+                conversation_id,
+                user_email,
+            ),
+        ).fetchone()
+
+        if row is None:
+            return
+
+        conversation_messages = json.loads(row[0])
+
+        conversation_messages.append(
+            {
+                "role": "assistant",
+                "content": response,
+            }
+        )
+
+        conn.execute(
+            """
+            UPDATE conversations
+            SET messages = ?
+            WHERE id = ?
+              AND user_email = ?
+            """,
+            (
+                json.dumps(conversation_messages),
+                conversation_id,
+                user_email,
+            ),
+        )
+
+        conn.commit()
+
+
 def resume_with_decision(
     *,
     agent,
@@ -186,8 +258,7 @@ def resume_with_decision(
         thread_id,
     )
 
-    # The actual HITL decision resumes the original
-    # LangGraph execution.
+    # Resume the original LangGraph execution with the admin decision.
     result = agent.invoke(
         Command(
             resume={
@@ -204,12 +275,165 @@ def resume_with_decision(
         context=context,
     )
 
+    # Update the pending action status only after resume succeeds.
+    final_status = "APPROVED" if decision == "approve" else "REJECTED"
+
     update_pending_action(
         action_id,
-        "APPROVED" if decision == "approve" else "REJECTED",
+        final_status,
     )
 
+    # Save the final assistant response to the customer conversation.
+    save_resumed_response(
+        conversation_id=conversation_id,
+        user_email=user_email,
+        result=result,
+    )
+
+    # Get the customer's database user ID for email logging.
+    with sqlite3.connect(DB_PATH) as conn:
+        user_row = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE email = ?
+              AND role = 'customer'
+            """,
+            (user_email,),
+        ).fetchone()
+
+    # Send an email notification after the admin decision.
+    if user_row is not None:
+        user_id = user_row[0]
+
+        action_type = action["action_type"]
+        order_id = action["order_id"]
+        product_name = action["product_name"]
+
+        if action_type == "CREATE_RETURN":
+
+            if decision == "approve":
+                subject = f"Return Request Approved - Order #{order_id}"
+
+                body = (
+                    "Hello,\n\n"
+                    f"Your return request for "
+                    f"'{product_name}' from order #{order_id} "
+                    "has been approved.\n\n"
+                    "Our support team will process the next steps "
+                    "for your return.\n\n"
+                    "Thank you,\n"
+                    "LangChain Support Team"
+                )
+
+                email_type = "RETURN_APPROVED"
+
+            else:
+                subject = f"Return Request Rejected - Order #{order_id}"
+
+                body = (
+                    "Hello,\n\n"
+                    f"Your return request for "
+                    f"'{product_name}' from order #{order_id} "
+                    "has been rejected after review.\n\n"
+                    "If you need additional assistance, please "
+                    "contact customer support.\n\n"
+                    "Thank you,\n"
+                    "LangChain Support Team"
+                )
+
+                email_type = "RETURN_REJECTED"
+
+        elif action_type == "CANCEL_ORDER":
+
+            if decision == "approve":
+                subject = f"Order #{order_id} Cancellation Approved"
+
+                body = (
+                    "Hello,\n\n"
+                    f"Your request to cancel order #{order_id} "
+                    "has been approved and processed.\n\n"
+                    "Thank you,\n"
+                    "LangChain Support Team"
+                )
+
+                email_type = "CANCELLATION_APPROVED"
+
+            else:
+                subject = f"Order #{order_id} Cancellation Rejected"
+
+                body = (
+                    "Hello,\n\n"
+                    f"Your request to cancel order #{order_id} "
+                    "has been rejected after review.\n\n"
+                    "If you need additional assistance, please "
+                    "contact customer support.\n\n"
+                    "Thank you,\n"
+                    "LangChain Support Team"
+                )
+
+                email_type = "CANCELLATION_REJECTED"
+
+        else:
+            subject = None
+            body = None
+            email_type = None
+
+        if subject and body and email_type:
+            try:
+                send_and_log_email(
+                    user_id=user_id,
+                    to_email=user_email,
+                    subject=subject,
+                    body=body,
+                    email_type=email_type,
+                )
+            except Exception as exc:
+                # Email failure should not undo an already completed
+                # admin decision.
+                print(f"Email notification failed for " f"action #{action_id}: {exc}")
+
     return result
+
+
+def find_existing_pending_action(
+    *,
+    thread_id: str,
+    action_type: str,
+    order_id: int,
+    product_name: str | None,
+):
+    """Return an existing matching pending action, if one exists."""
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+
+        return conn.execute(
+            """
+            SELECT *
+            FROM pending_actions
+            WHERE thread_id = ?
+              AND action_type = ?
+              AND order_id = ?
+              AND (
+                    product_name = ?
+                    OR (
+                        product_name IS NULL
+                        AND ? IS NULL
+                    )
+                  )
+              AND status = 'PENDING'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                thread_id,
+                action_type,
+                order_id,
+                product_name,
+                product_name,
+            ),
+        ).fetchone()
 
 
 def handle_interrupt(
@@ -225,19 +449,45 @@ def handle_interrupt(
     value = interrupt.value
 
     for action_request in value.get("action_requests", []):
+
         name = action_request["name"]
         args = action_request.get("args", {})
 
-        if name != "create_return_action":
+        if name == "cancel_order_action":
+
+            action_type = "CANCEL_ORDER"
+            order_id = int(args["order_id"])
+            product_name = None
+            reason = None
+
+        elif name == "create_return_action":
+
+            action_type = "CREATE_RETURN"
+            order_id = int(args["order_id"])
+            product_name = args.get("product_name")
+            reason = args.get("reason")
+
+        else:
+            continue
+
+        existing_action = find_existing_pending_action(
+            thread_id=thread_id,
+            action_type=action_type,
+            order_id=order_id,
+            product_name=product_name,
+        )
+
+        if existing_action is not None:
+            action_ids.append(existing_action["id"])
             continue
 
         action_id = create_pending_action(
             thread_id=thread_id,
             user_email=user_email,
-            action_type="CREATE_RETURN",
-            order_id=int(args["order_id"]),
-            product_name=args.get("product_name"),
-            reason=args.get("reason"),
+            action_type=action_type,
+            order_id=order_id,
+            product_name=product_name,
+            reason=reason,
         )
 
         action_ids.append(action_id)
